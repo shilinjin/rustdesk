@@ -52,7 +52,7 @@ pub const FPS: u32 = 30;
 pub const MIN_FPS: u32 = 1;
 pub const MAX_FPS: u32 = 120;
 pub const INIT_FPS: u32 = 60; // LAN60: start at 60fps instead of 15
-const MIN_AUTO_FPS: u32 = 5;
+const MIN_AUTO_FPS: u32 = 15; // LAN60: 5 -> 15, keep a usable floor during stalls
 
 // Bitrate ratio constants for different quality levels
 const BR_MAX: f32 = 40.0; // 2000 * 2 / 100
@@ -63,7 +63,9 @@ const MAX_BR_MULTIPLE: f32 = 1.0;
 const HISTORY_DELAY_LEN: usize = 2;
 const ADJUST_RATIO_INTERVAL: usize = 3; // Adjust quality ratio every 3 seconds
 const DYNAMIC_SCREEN_THRESHOLD: usize = 2; // Allow increase quality ratio if encode more than 2 times in one second
-const DELAY_THRESHOLD_150MS: u32 = 150; // 150ms is the threshold for good network condition
+// LAN60: raised 150 -> 300ms. LAN/WiFi jitter routinely spikes 150-300ms; only
+// sustained congestion above 300ms should cut fps/bitrate on a local network.
+const DELAY_THRESHOLD_150MS: u32 = 300;
 const RESTORE_GUARD_SAMPLES: u8 = 5; // A restored level that congests this soon is lowered
 
 #[derive(Default, Debug, Clone)]
@@ -144,10 +146,12 @@ impl UserDelay {
         }
         // A fast restore probes capacity. Roll it back promptly if the queue grows
         // again, rather than waiting through another ordinary confirmation window.
+        // LAN60: gentler cuts (1/3 and 1/8 instead of 1/2 and 1/5) so a confirmed
+        // congestion dip on WiFi does not yank the frame rate down hard.
         let divisor = if delay >= 1000 || failed_restore {
-            2
+            3
         } else {
-            5
+            8
         };
         self.on_reduction(current_fps);
         fps.max(current_fps.saturating_sub((current_fps / divisor).max(1)))
@@ -467,12 +471,15 @@ impl VideoQoS {
         let bitrate_first = self.can_reduce_bitrate();
 
         // For bad network, small fps means quick reaction and high quality
+        // LAN60: raise adaptive floors (8/10/12 -> 30) and recovery targets
+        // (16/20/24 -> 45/48) so cuts never drop below 30fps on a LAN, and the
+        // frame rate climbs back toward the 60fps viewer cap quickly.
         let (min_fps, normal_fps) = if target_ratio >= BR_BEST {
-            (8, 16)
+            (30, 45)
         } else if target_ratio >= BR_BALANCED {
-            (10, 20)
+            (30, 45)
         } else {
-            (12, 24)
+            (30, 48)
         };
 
         // Calculate minimum acceptable delay-fps product
@@ -506,13 +513,13 @@ impl VideoQoS {
                 if user.delay.quick_increase_fps_count >= 3 {
                     // After 3 consecutive good samples, increase more aggressively
                     user.delay.quick_increase_fps_count = 0;
-                    step = 5;
+                    step = 8; // LAN60: 5 -> 8, climb back to 60fps faster
                 }
                 fps = min_fps.max(fps + step);
             } else if avg_delay < 100 {
                 let step = if avg_delay < old_avg_delay {
                     if fps < normal_fps {
-                        1
+                        2 // LAN60: 1 -> 2, faster recovery toward the cap
                     } else {
                         0
                     }
@@ -544,7 +551,7 @@ impl VideoQoS {
             if user.delay.increase_fps_count >= 3 {
                 // After 3 stable samples, try increasing FPS
                 user.delay.increase_fps_count = 0;
-                fps += 1;
+                fps += 2; // LAN60: 1 -> 2, faster recovery toward the cap
             }
 
             // Reset quick increase counter if network condition worsens
