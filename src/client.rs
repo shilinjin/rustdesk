@@ -3398,7 +3398,8 @@ impl LoginConfigHandler {
             msg.image_quality = q.into();
         } else if q == "custom" {
             let config = self.load_config();
-            let allow_more = !crate::using_public_server() || self.direct == Some(true);
+            // LAN60: always allow high fps & quality (remove public-server cap)
+            let allow_more = true;
             let quality = if config.custom_image_quality.is_empty() {
                 50
             } else {
